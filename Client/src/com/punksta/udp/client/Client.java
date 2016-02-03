@@ -20,25 +20,20 @@ import java.util.stream.Stream;
  */
 public class Client implements
         Cancable {
-    private final Object monitor = new Object();
-
-    private final FileSlidingWidnow slidingWindow;
-    private final Сhannel<byte[]> readingBuffer;
-
     private final ClientSender clientSender;
     private final FileReader reader;
     private final Receiver receiver;
 
-    private volatile int readingNumber = 1;
+    private final PartOfFileSlidingWidnow slidingWindow;
+    private final Сhannel<byte[]> readingBuffer; // reader invokes get, put is invoked when on get moving sindow
 
-    private volatile int end = Integer.MAX_VALUE;
-
+    private volatile int readingIndex = 1; // 0 - for init package
     private Timer timer = new Timer();
 
-    private static final long timeOut = 1500;
+    private static final long TIME_OUT = 1500;
 
     public Client(String fileName, int slidingWindowSize, int packageSize, InetAddress address, int serverPort) throws IOException {
-        slidingWindow =  new FileSlidingWidnow(slidingWindowSize);
+        slidingWindow =  new PartOfFileSlidingWidnow(slidingWindowSize);
         readingBuffer = new Сhannel<>(slidingWindowSize);
 
         for (int i = 0; i < slidingWindowSize; i++)
@@ -74,17 +69,17 @@ public class Client implements
             public void run() {
                resend();
             }
-        }, timeOut, timeOut);
+        }, TIME_OUT, TIME_OUT);
     }
 
 
     private void resend() {
-        slidingWindow.getNotConfirmedParts(timeOut).forEach(clientSender::sent);
+        slidingWindow.getNotConfirmedParts(TIME_OUT).forEach(clientSender::sent);
     }
 
     private void onEnd() {
-        end = slidingWindow.getCurrentEnd();
-        clientSender.sent(getDataGram());
+        System.out.println("file have read");
+        reader.cancel();
     }
 
     private void onPartRead(byte[] bytes, int realSize) {
@@ -124,7 +119,7 @@ public class Client implements
     }
 
     private PartOfFile getDataGram() {
-       return slidingWindow.get(readingNumber++);
+       return slidingWindow.get(readingIndex++);
     }
 
 
@@ -136,12 +131,17 @@ public class Client implements
         timer.cancel();
     }
 
-    public static class FileSlidingWidnow extends  ConcurrentSlidingWindow<TimedPartOfFile> {
+    private static class PartOfFileSlidingWidnow extends  ConcurrentSlidingWindow<TimedPartOfFile> {
 
-        public FileSlidingWidnow(int size) {
+        public PartOfFileSlidingWidnow(int size) {
             super(size);
         }
 
+        /**
+         * return stream of package without confirmation
+         * @param timeOutInMilliseconds timeout after it package should have confirm
+         * @return Stream of timeout packages
+         */
         public Stream<TimedPartOfFile> getNotConfirmedParts(long timeOutInMilliseconds) {
             synchronized (lock) {
                 long now = System.currentTimeMillis();
@@ -151,6 +151,10 @@ public class Client implements
             }
         }
 
+        /**
+         * move window while number of packages in the front of window follow each other
+         * @return List of free packages after moving. Reuse data from them
+         */
         public List<TimedPartOfFile> moveWindow() {
             synchronized (lock) {
                 LinkedList<TimedPartOfFile> result = new LinkedList<>();
@@ -161,6 +165,11 @@ public class Client implements
             }
         }
 
+        /**
+         * set sending time
+         * @param number package number
+         * @param sending time of sending
+         */
         public void setSendingTime(int number, long sending) {
             synchronized (lock) {
                 if (number >= getCurrentStart()) {
@@ -173,6 +182,10 @@ public class Client implements
             }
         }
 
+        /**
+         * Set some package confirm
+         * @param number number of package
+         */
         public void setConfirm(int number) {
             synchronized (lock) {
                 if (number >= getCurrentStart())
