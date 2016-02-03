@@ -24,7 +24,7 @@ public class Server implements Cancable {
     private Sender sender;
     private ServerReceiver reciever;
 
-    private volatile int lastPackageNumber;
+    private volatile int totalPackages;
 
     private static final boolean debug = true;
     private volatile boolean init = false;
@@ -38,7 +38,7 @@ public class Server implements Cancable {
     public Server(int packageSize, int port, int slidingWindowSize) throws SocketException {
         DatagramSocket socket = new DatagramSocket(port);
 
-        reciever = new ServerReceiver(socket, this::onReceive, () -> new byte[packageSize]);
+        reciever = new ServerReceiver(socket, this::onReceive, () -> new byte[packageSize + 4]);
         writer = new Writer(slidingWindowSize);
         sender = new Sender(slidingWindowSize, socket);
 
@@ -54,11 +54,11 @@ public class Server implements Cancable {
             if (partOfFile.number == 0 && !init) {
                 init = true;
                 InitPackage initPackage = InitPackage.fromBytes(partOfFile.data);
-                lastPackageNumber = (int) (initPackage.packageNumber);
+                totalPackages = (int) (initPackage.totalPackageCount);
                 writer.init(initPackage);
-                System.out.printf("Start receiving %s size: %d number of packages: %d%n", initPackage.fileName, initPackage.fileSize, initPackage.packageNumber);
-            }
-            processPartOfFile(partOfFile);
+                System.out.printf("Start receiving %s size: %d number of packages: %d%n", initPackage.fileName, initPackage.fileSize, initPackage.totalPackageCount);
+            } else
+                processPartOfFile(partOfFile);
             sendConfirm(partOfFile.number, packet.getPort(), packet.getAddress());
         } catch (IOException e) {
             e.printStackTrace();
@@ -90,9 +90,9 @@ public class Server implements Cancable {
                 for (PartOfFile p : result) {
                    write(p);
                 }
-                if (partOfFileMap.first().number == lastPackageNumber) {
+                if (partOfFileMap.first().number == totalPackages - 1) {
                     write(partOfFileMap.first());
-                    System.out.printf("Success sending of %d packages time:%f %n", lastPackageNumber, (System.currentTimeMillis() - timeOfStart) / 1000f);
+                    System.out.printf("Success sending of %d packages time:%f %n", totalPackages, (System.currentTimeMillis() - timeOfStart) / 1000f);
                     cancel();
                 }
             }

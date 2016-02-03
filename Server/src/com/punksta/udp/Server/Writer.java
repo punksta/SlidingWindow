@@ -28,7 +28,7 @@ class Writer implements Cancable {
                     try {
                         PartOfFile partOfFile = chanel.get();
                         outputStream.write(partOfFile.data);
-                        if (initPackage.packageNumber - 1 == partOfFile.number) {
+                        if (initPackage.totalPackageCount - 1 == partOfFile.number) {
                             cancel();
                         }
                     } catch (InterruptedException | IOException e) {

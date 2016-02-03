@@ -7,10 +7,12 @@ import java.io.File;
 import java.io.IOException;
 import java.net.DatagramSocket;
 import java.net.InetAddress;
-import java.util.ArrayList;
+import java.util.LinkedList;
 import java.util.List;
 import java.util.Timer;
 import java.util.TimerTask;
+import java.util.stream.IntStream;
+import java.util.stream.Stream;
 
 /**
  * Created by com.punksta on 31.01.16.
@@ -20,14 +22,14 @@ public class Client implements
         Cancable {
     private final Object monitor = new Object();
 
-    private final ConcurrentSlidingWindow<TimedPartOfFile> slidingWindow;
+    private final FileSlidingWidnow slidingWindow;
     private final Сhannel<byte[]> readingBuffer;
 
     private final ClientSender clientSender;
     private final FileReader reader;
     private final Receiver receiver;
 
-    private volatile int readingNumber = 0;
+    private volatile int readingNumber = 1;
 
     private volatile int end = Integer.MAX_VALUE;
 
@@ -36,7 +38,7 @@ public class Client implements
     private static final long timeOut = 1500;
 
     public Client(String fileName, int slidingWindowSize, int packageSize, InetAddress address, int serverPort) throws IOException {
-        slidingWindow =  new ConcurrentSlidingWindow<>(slidingWindowSize);
+        slidingWindow =  new FileSlidingWidnow(slidingWindowSize);
         readingBuffer = new Сhannel<>(slidingWindowSize);
 
         for (int i = 0; i < slidingWindowSize; i++)
@@ -46,16 +48,26 @@ public class Client implements
         DatagramSocket socket = new DatagramSocket();
 
 
-        byte[] initPackageByte = new InitPackage(file.length(), fileName, roundedNatural(file.length(), packageSize)).toBytes();
+        long numberOfPackages = roundedNatural(file.length(), packageSize);
+        long numberOfPackagesPlusInit = numberOfPackages + 1;
+
+        byte[] initPackageByte = new InitPackage(file.length(), fileName, numberOfPackagesPlusInit).toBytes();
         TimedPartOfFile init = new TimedPartOfFile(initPackageByte, 0);
 
         slidingWindow.read(init);
 
-        clientSender = new ClientSender(slidingWindowSize, packageSize, this::onPackageSend, socket, address, serverPort);
+        clientSender = new ClientSender(
+                slidingWindowSize,
+                packageSize,
+                packageNumber -> slidingWindow.setSendingTime(packageNumber, System.currentTimeMillis()),
+                socket,
+                address,
+                serverPort
+        );
 
         clientSender.sent(init);
-        reader = new FileReader(file, this::getReadingArray, this::onPartRead, this::onEnd);
 
+        reader = new FileReader(file, this::getReadingArray, this::onPartRead, this::onEnd);
         receiver = new Receiver(socket, this::onPackageConfirm);
         timer.scheduleAtFixedRate(new TimerTask() {
             @Override
@@ -67,17 +79,7 @@ public class Client implements
 
 
     private void resend() {
-        List<PartOfFile> resend = new ArrayList<>();
-        synchronized (monitor) {
-            for (int i = slidingWindow.getCurrentStart(); i < slidingWindow.getCurrentEnd(); i++) {
-                TimedPartOfFile timedPartOfFile = slidingWindow.get(i);
-                if (timedPartOfFile.timeOfSanding != 0 && !timedPartOfFile.confirm)
-                    resend.add(timedPartOfFile);
-            }
-        }
-        for (PartOfFile r:resend)
-            if (r != null)
-                clientSender.sent(r);
+        slidingWindow.getNotConfirmedParts(timeOut).forEach(clientSender::sent);
     }
 
     private void onEnd() {
@@ -115,37 +117,16 @@ public class Client implements
         if (slidingWindow.getCurrentStart() > pNubmer)
             return;
 
-        synchronized (monitor) {
-            slidingWindow.get(pNubmer).confirm = true;
-
-            while (slidingWindow.get(slidingWindow.getCurrentStart()).confirm) {
-                byte[] freeBytes = slidingWindow.move().data;
-                if (pNubmer != 0)
-                    readingBuffer.put(freeBytes);
-            }
-
-            if (slidingWindow.getCurrentStart() == end)
-                cancel();
-        }
+        slidingWindow.setConfirm(pNubmer);
+        for (TimedPartOfFile p: slidingWindow.moveWindow())
+            if (p.number != 0)
+                readingBuffer.put(p.data);
     }
 
     private PartOfFile getDataGram() {
        return slidingWindow.get(readingNumber++);
     }
 
-    private void onPackageSend(Integer packageNumber) {
-        long millisecond = System.currentTimeMillis();
-        synchronized (monitor) {
-            if (packageNumber >= slidingWindow.getCurrentStart()) {
-                try {
-                    slidingWindow.get(packageNumber).timeOfSanding = millisecond;
-                } catch (NullPointerException e) {
-                    e.printStackTrace();
-                    System.err.println("onPackageSend " + packageNumber + " start:" + slidingWindow.getCurrentStart() + " end:" + slidingWindow.getCurrentEnd());
-                }
-            }
-        }
-    }
 
     @Override
     public void cancel() {
@@ -155,6 +136,48 @@ public class Client implements
         timer.cancel();
     }
 
+    public static class FileSlidingWidnow extends  ConcurrentSlidingWindow<TimedPartOfFile> {
 
+        public FileSlidingWidnow(int size) {
+            super(size);
+        }
 
+        public Stream<TimedPartOfFile> getNotConfirmedParts(long timeOutInMilliseconds) {
+            synchronized (lock) {
+                long now = System.currentTimeMillis();
+                return IntStream.range(getCurrentStart(), getCurrentEnd())
+                        .mapToObj(this::get)
+                        .filter(timedPartOfFile -> timedPartOfFile != null && !timedPartOfFile.confirm && timedPartOfFile.timeOfSanding != 0 && now - timedPartOfFile.timeOfSanding > timeOutInMilliseconds);
+            }
+        }
+
+        public List<TimedPartOfFile> moveWindow() {
+            synchronized (lock) {
+                LinkedList<TimedPartOfFile> result = new LinkedList<>();
+                while (get(getCurrentStart()).confirm) {
+                    result.add(move());
+                }
+                return result;
+            }
+        }
+
+        public void setSendingTime(int number, long sending) {
+            synchronized (lock) {
+                if (number >= getCurrentStart()) {
+                    try {
+                        get(number).timeOfSanding = sending;
+                    } catch (NullPointerException e) {
+                        e.printStackTrace();
+                    }
+                }
+            }
+        }
+
+        public void setConfirm(int number) {
+            synchronized (lock) {
+                if (number >= getCurrentStart())
+                    get(number).confirm = true;
+            }
+        }
+    }
 }

@@ -10,15 +10,15 @@ import java.io.Serializable;
 public class InitPackage implements Serializable {
     public long fileSize;
     public String fileName;
-    public long packageNumber;
+    public long totalPackageCount;
 
     public InitPackage() {
     }
 
-    public InitPackage(long fileSize, String fileName, long packageNumber) {
+    public InitPackage(long fileSize, String fileName, long totalPackageCount) {
         this.fileSize = fileSize;
         this.fileName = fileName;
-        this.packageNumber = packageNumber;
+        this.totalPackageCount = totalPackageCount;
     }
 
     public static InitPackage fromBytes(byte[] bytes) throws IOException {

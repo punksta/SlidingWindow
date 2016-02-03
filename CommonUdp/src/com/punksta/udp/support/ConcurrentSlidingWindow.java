@@ -6,7 +6,7 @@ package com.punksta.udp.support;
  */
 public class ConcurrentSlidingWindow<T> {
     private final CyclingFixedSizeDeque<T> deque;
-    private final Object lock = new Object();
+    protected final Object lock = new Object();
     private int currentStart;
     private int currentEnd;
     private int size;
@@ -51,7 +51,7 @@ public class ConcurrentSlidingWindow<T> {
         synchronized (lock) {
             while (i - currentStart >= deque.realSize())
                 try {
-                    lock.wait(300);
+                    lock.wait();
                 } catch (InterruptedException e) {
                     e.printStackTrace();
                 }
